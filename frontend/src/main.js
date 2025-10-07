@@ -112,6 +112,12 @@ document.querySelector('#app').innerHTML = `
                     </div>
 
                     <div class="setting-section">
+                        <h3>Pull Sync Interval</h3>
+                        <p class="help-text">How often to check for remote changes (in seconds, default: 60)</p>
+                        <input type="number" id="pullSyncIntervalInput" class="text-input" placeholder="60" value="60" min="5" max="3600" />
+                    </div>
+
+                    <div class="setting-section">
                         <button class="btn btn-primary" id="saveSettingsBtn">Save Settings</button>
                     </div>
                 </div>
@@ -135,6 +141,7 @@ const sshConnectionInput = document.getElementById('sshConnectionInput');
 const remotePathInput = document.getElementById('remotePathInput');
 const ignoreListInput = document.getElementById('ignoreListInput');
 const logRetentionInput = document.getElementById('logRetentionInput');
+const pullSyncIntervalInput = document.getElementById('pullSyncIntervalInput');
 const logsWatchFolder = document.getElementById('logsWatchFolder');
 const syncWatchFolder = document.getElementById('syncWatchFolder');
 const statusDiv = document.getElementById('status');
@@ -147,6 +154,7 @@ let sshConnection = '';
 let remotePath = '';
 let ignoreList = [];
 let logRetentionMinutes = 15;
+let pullSyncInterval = 60;
 let isWatching = false;
 
 // Track directory sync status
@@ -158,7 +166,8 @@ let originalSettings = {
     connection: '',
     path: '',
     ignoreList: '',
-    logRetention: 15
+    logRetention: 15,
+    pullSyncInterval: 60
 };
 
 // Check if settings have changed
@@ -167,7 +176,8 @@ function hasSettingsChanged() {
            sshConnectionInput.value.trim() !== originalSettings.connection ||
            remotePathInput.value.trim() !== originalSettings.path ||
            ignoreListInput.value.trim() !== originalSettings.ignoreList ||
-           parseInt(logRetentionInput.value) !== originalSettings.logRetention;
+           parseInt(logRetentionInput.value) !== originalSettings.logRetention ||
+           parseInt(pullSyncIntervalInput.value) !== originalSettings.pullSyncInterval;
 }
 
 // Update save button state
@@ -213,6 +223,10 @@ async function loadInitialSettings() {
             logRetentionMinutes = config.logRetentionMinutes;
             logRetentionInput.value = config.logRetentionMinutes;
         }
+        if (config.pullSyncInterval) {
+            pullSyncInterval = config.pullSyncInterval;
+            pullSyncIntervalInput.value = config.pullSyncInterval;
+        }
 
         // Update original settings for change detection
         originalSettings = {
@@ -220,7 +234,8 @@ async function loadInitialSettings() {
             connection: sshConnection,
             path: remotePath,
             ignoreList: ignoreListInput.value,
-            logRetention: logRetentionMinutes
+            logRetention: logRetentionMinutes,
+            pullSyncInterval: pullSyncInterval
         };
 
         // Initial button state
@@ -257,6 +272,7 @@ sshConnectionInput.addEventListener('input', updateSaveButtonState);
 remotePathInput.addEventListener('input', updateSaveButtonState);
 ignoreListInput.addEventListener('input', updateSaveButtonState);
 logRetentionInput.addEventListener('input', updateSaveButtonState);
+pullSyncIntervalInput.addEventListener('input', updateSaveButtonState);
 
 // Tab switching
 tabBtns.forEach(btn => {
@@ -296,6 +312,7 @@ saveSettingsBtn.addEventListener('click', async () => {
     const newRemotePath = remotePathInput.value.trim();
     const ignoreListText = ignoreListInput.value.trim();
     const newLogRetention = parseInt(logRetentionInput.value) || 15;
+    const newPullSyncInterval = parseInt(pullSyncIntervalInput.value) || 60;
 
     // Parse ignore list - split by newlines and filter empty lines
     const newIgnoreList = ignoreListText
@@ -322,8 +339,9 @@ saveSettingsBtn.addEventListener('click', async () => {
         remotePath = newRemotePath;
         ignoreList = newIgnoreList;
         logRetentionMinutes = newLogRetention;
+        pullSyncInterval = newPullSyncInterval;
 
-        await SaveSettings(globalFolder, sshConnection, remotePath, ignoreList, logRetentionMinutes);
+        await SaveSettings(globalFolder, sshConnection, remotePath, ignoreList, logRetentionMinutes, pullSyncInterval);
 
         // Update other tabs with the settings
         logsWatchFolder.textContent = globalFolder;
@@ -335,7 +353,8 @@ saveSettingsBtn.addEventListener('click', async () => {
             connection: sshConnection,
             path: remotePath,
             ignoreList: ignoreListText,
-            logRetention: logRetentionMinutes
+            logRetention: logRetentionMinutes,
+            pullSyncInterval: pullSyncInterval
         };
 
         // Enable start watching
@@ -442,7 +461,11 @@ EventsOn('syncStatus', (data) => {
         if (data.operation === 'INITIAL_SYNC') {
             addLog(`${arrow} Initial sync from server (server overwrites local)`, 'info');
         } else if (data.operation === 'POLL') {
-            addLog(`${arrow} Pulled remote changes [${direction}]`, 'info');
+            if (data.protectedFiles && data.protectedFiles > 0) {
+                addLog(`${arrow} Pulled remote changes [${direction}] (protected ${data.protectedFiles} files from Neovim overwrite)`, 'info');
+            } else {
+                addLog(`${arrow} Pulled remote changes [${direction}]`, 'info');
+            }
         } else {
             addLog(`${arrow} Synced [${data.operation}]: ${relPath} [${direction}]`, 'info');
         }

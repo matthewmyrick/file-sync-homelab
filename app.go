@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -21,18 +22,20 @@ type Config struct {
 	RemotePath          string   `json:"remotePath"`
 	IgnoreList          []string `json:"ignoreList"`
 	LogRetentionMinutes int      `json:"logRetentionMinutes"`
+	PullSyncInterval    int      `json:"pullSyncInterval"` // Pull sync interval in seconds
 }
 
 // App struct
 type App struct {
-	ctx           context.Context
-	watcher       *fsnotify.Watcher
-	localFolder   string
-	sshConnection string
-	remotePath    string
-	ignoreList    []string
-	pollTicker    *time.Ticker
-	stopPoll      chan bool
+	ctx              context.Context
+	watcher          *fsnotify.Watcher
+	localFolder      string
+	sshConnection    string
+	remotePath       string
+	ignoreList       []string
+	pullSyncInterval int
+	pollTicker       *time.Ticker
+	stopPoll         chan bool
 }
 
 // NewApp creates a new App application struct
@@ -66,6 +69,66 @@ func getConfigPath() (string, error) {
 	return filepath.Join(homeDir, ".file-sync-homelab-config.json"), nil
 }
 
+// isFileBeingEditedInNeovim checks if a file is currently being edited in Neovim
+// by looking for Neovim swap files (.filename.swp, .filename.swo, .filename.swn, etc.)
+func isFileBeingEditedInNeovim(filePath string) bool {
+	dir := filepath.Dir(filePath)
+	filename := filepath.Base(filePath)
+	
+	// Neovim swap file patterns: .filename.swp, .filename.swo, .filename.swn, etc.
+	swapPatterns := []string{
+		fmt.Sprintf(".%s.swp", filename),
+		fmt.Sprintf(".%s.swo", filename),
+		fmt.Sprintf(".%s.swn", filename),
+		fmt.Sprintf(".%s.swm", filename),
+		fmt.Sprintf(".%s.swl", filename),
+		fmt.Sprintf(".%s.swk", filename),
+		fmt.Sprintf(".%s.swj", filename),
+		fmt.Sprintf(".%s.swi", filename),
+	}
+	
+	for _, pattern := range swapPatterns {
+		swapFile := filepath.Join(dir, pattern)
+		if _, err := os.Stat(swapFile); err == nil {
+			log.Printf("Found Neovim swap file for %s: %s", filePath, swapFile)
+			return true
+		}
+	}
+	
+	return false
+}
+
+// findFilesBeingEditedInNeovim walks through the directory and finds files currently being edited
+func (a *App) findFilesBeingEditedInNeovim() ([]string, error) {
+	var editedFiles []string
+	
+	err := filepath.Walk(a.localFolder, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		
+		// Skip directories and hidden files
+		if info.IsDir() || strings.HasPrefix(info.Name(), ".") {
+			return nil
+		}
+		
+		// Check if this file is being edited in Neovim
+		if isFileBeingEditedInNeovim(path) {
+			// Get relative path for rsync exclude
+			relPath, err := filepath.Rel(a.localFolder, path)
+			if err != nil {
+				log.Printf("Warning: could not get relative path for %s: %v", path, err)
+				return nil
+			}
+			editedFiles = append(editedFiles, relPath)
+		}
+		
+		return nil
+	})
+	
+	return editedFiles, err
+}
+
 // TestConnection tests the SSH connection and verifies the remote path exists
 func (a *App) TestConnection(sshConnection, remotePath string) error {
 	if sshConnection == "" {
@@ -92,11 +155,12 @@ func (a *App) TestConnection(sshConnection, remotePath string) error {
 }
 
 // SaveSettings saves the sync settings to memory and to config file
-func (a *App) SaveSettings(localFolder, sshConnection, remotePath string, ignoreList []string, logRetentionMinutes int) error {
+func (a *App) SaveSettings(localFolder, sshConnection, remotePath string, ignoreList []string, logRetentionMinutes int, pullSyncInterval int) error {
 	a.localFolder = localFolder
 	a.sshConnection = sshConnection
 	a.remotePath = remotePath
 	a.ignoreList = ignoreList
+	a.pullSyncInterval = pullSyncInterval
 
 	// Save to config file
 	config := Config{
@@ -105,6 +169,7 @@ func (a *App) SaveSettings(localFolder, sshConnection, remotePath string, ignore
 		RemotePath:          remotePath,
 		IgnoreList:          ignoreList,
 		LogRetentionMinutes: logRetentionMinutes,
+		PullSyncInterval:    pullSyncInterval,
 	}
 
 	configPath, err := getConfigPath()
@@ -154,6 +219,12 @@ func (a *App) LoadSettings() (*Config, error) {
 	a.sshConnection = config.SSHConnection
 	a.remotePath = config.RemotePath
 	a.ignoreList = config.IgnoreList
+	a.pullSyncInterval = config.PullSyncInterval
+
+	// Default to 60 seconds if not set
+	if a.pullSyncInterval <= 0 {
+		a.pullSyncInterval = 60
+	}
 
 	log.Printf("Settings loaded from %s", configPath)
 	return &config, nil
@@ -219,9 +290,16 @@ func (a *App) SyncLocalToRemote() error {
 }
 
 // SyncRemoteToLocal syncs remote folder to local (remote → local, server is truth)
+// but excludes files currently being edited in Neovim
 func (a *App) SyncRemoteToLocal() error {
 	if a.sshConnection == "" || a.remotePath == "" || a.localFolder == "" {
 		return fmt.Errorf("sync settings not configured")
+	}
+
+	// Find files currently being edited in Neovim
+	editedFiles, err := a.findFilesBeingEditedInNeovim()
+	if err != nil {
+		log.Printf("Warning: could not check for Neovim edited files: %v", err)
 	}
 
 	// Build rsync command with exclude patterns
@@ -232,6 +310,14 @@ func (a *App) SyncRemoteToLocal() error {
 		if pattern != "" {
 			args = append(args, "--exclude", pattern)
 		}
+	}
+
+	// Exclude files being edited in Neovim
+	skippedCount := 0
+	for _, file := range editedFiles {
+		args = append(args, "--exclude", file)
+		skippedCount++
+		log.Printf("Protecting file from overwrite (Neovim editing): %s", file)
 	}
 
 	// Add source and destination (remote → local)
@@ -245,7 +331,11 @@ func (a *App) SyncRemoteToLocal() error {
 		return fmt.Errorf("rsync failed: %w - %s", err, string(output))
 	}
 
-	log.Printf("Sync remote→local completed")
+	if skippedCount > 0 {
+		log.Printf("Sync remote→local completed (protected %d files from Neovim overwrite)", skippedCount)
+	} else {
+		log.Printf("Sync remote→local completed")
+	}
 	return nil
 }
 
@@ -375,8 +465,12 @@ func (a *App) StartWatching(folderPath string) error {
 		return fmt.Errorf("failed to watch folder: %w", err)
 	}
 
-	// Start polling for remote changes (every 5 seconds)
-	a.pollTicker = time.NewTicker(5 * time.Second)
+	// Start polling for remote changes (use configured interval, default 60 seconds)
+	pollInterval := a.pullSyncInterval
+	if pollInterval <= 0 {
+		pollInterval = 60 // Default to 60 seconds if not configured
+	}
+	a.pollTicker = time.NewTicker(time.Duration(pollInterval) * time.Second)
 	a.stopPoll = make(chan bool)
 
 	go func() {
@@ -397,12 +491,15 @@ func (a *App) StartWatching(folderPath string) error {
 						"timestamp": time.Now().Unix(),
 					})
 				} else {
+					// Get count of protected files for the event
+					editedFiles, _ := a.findFilesBeingEditedInNeovim()
 					runtime.EventsEmit(a.ctx, "syncStatus", map[string]interface{}{
-						"path":      folderPath,
-						"success":   true,
-						"operation": "POLL",
-						"direction": "remote→local",
-						"timestamp": time.Now().Unix(),
+						"path":          folderPath,
+						"success":       true,
+						"operation":     "POLL",
+						"direction":     "remote→local",
+						"timestamp":     time.Now().Unix(),
+						"protectedFiles": len(editedFiles),
 					})
 				}
 			case <-a.stopPoll:

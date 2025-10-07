@@ -50,7 +50,11 @@ if [ -d "build/bin/file-sync-homelab.app" ]; then
     # Update the icon if we have a custom one
     if [ -f "$LOGO_ICNS_PATH" ]; then
         echo "🖼️ Updating app icon..."
-        cp "$LOGO_ICNS_PATH" "$INSTALL_DIR/$APP_DIR/Contents/Resources/iconfile.icns" 2>/dev/null || true
+        cp "$LOGO_ICNS_PATH" "$INSTALL_DIR/$APP_DIR/Contents/Resources/iconfile.icns"
+        # Refresh icon cache
+        touch "$INSTALL_DIR/$APP_DIR"
+        killall Finder 2>/dev/null || true
+        killall Dock 2>/dev/null || true
     fi
 else
     echo "❌ Build failed or app not found in build/bin/"

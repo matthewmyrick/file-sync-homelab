@@ -1,0 +1,339 @@
+name: Build Desktop Apps
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build:frontend || npm run build
+
+      - name: Create macOS app
+        run: |
+          chmod +x install/mac.sh
+          cd install
+          ./mac.sh || true
+          
+      - name: Create DMG installer
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "RabbitSync Installer" \
+            --volicon "frontend/src/assets/images/RabbitSyncLogo.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "RabbitSync.app" 175 120 \
+            --hide-extension "RabbitSync.app" \
+            --app-drop-link 425 120 \
+            "RabbitSync-macOS.dmg" \
+            "/Applications/RabbitSync.app" || echo "DMG creation failed, uploading app bundle instead"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: rabbitsync-macos
+          path: |
+            RabbitSync-macOS.dmg
+            /Applications/RabbitSync.app
+          if-no-files-found: warn
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build:frontend || npm run build
+
+      - name: Create Windows installer
+        shell: powershell
+        run: |
+          $APP_NAME = "RabbitSync"
+          $INSTALL_DIR = "$env:TEMP\$APP_NAME"
+          
+          Write-Host "📁 Creating installation directory..."
+          Remove-Item -Path $INSTALL_DIR -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $INSTALL_DIR -Force
+          
+          Write-Host "📋 Copying application files..."
+          if (Test-Path "backend") {
+              Copy-Item -Path "backend" -Destination $INSTALL_DIR -Recurse
+          }
+          if (Test-Path "dist") {
+              Copy-Item -Path "dist" -Destination $INSTALL_DIR -Recurse
+          }
+          if (Test-Path "frontend\dist") {
+              New-Item -ItemType Directory -Path "$INSTALL_DIR\frontend" -Force
+              Copy-Item -Path "frontend\dist" -Destination "$INSTALL_DIR\frontend" -Recurse
+          }
+          if (Test-Path "package.json") {
+              Copy-Item -Path "package.json" -Destination $INSTALL_DIR
+          }
+          if (Test-Path "node_modules") {
+              Write-Host "📦 Copying node_modules (this may take a while)..."
+              Copy-Item -Path "node_modules" -Destination $INSTALL_DIR -Recurse
+          }
+          
+          Write-Host "🖼️ Copying icon..."
+          if (Test-Path "frontend\src\assets\images\RabbitSyncLogo.ico") {
+              Copy-Item -Path "frontend\src\assets\images\RabbitSyncLogo.ico" -Destination "$INSTALL_DIR\$APP_NAME.ico"
+          } elseif (Test-Path "frontend\src\assets\images\RabbitSyncLogo.png") {
+              Copy-Item -Path "frontend\src\assets\images\RabbitSyncLogo.png" -Destination "$INSTALL_DIR\$APP_NAME.png"
+          }
+          
+          Write-Host "📝 Creating batch file..."
+          @"
+          @echo off
+          title $APP_NAME
+          cd /d "%~dp0"
+          
+          if exist "backend\server.js" (
+              node backend\server.js
+          ) else if exist "dist\server.js" (
+              node dist\server.js
+          ) else if exist "server.js" (
+              node server.js
+          ) else (
+              echo Error: Could not find server files.
+              echo Please rebuild the application.
+              pause
+              exit /b 1
+          )
+          "@ | Out-File -FilePath "$INSTALL_DIR\$APP_NAME.bat" -Encoding ASCII
+          
+          Write-Host "📝 Creating VBS launcher..."
+          @"
+          Set WshShell = CreateObject("WScript.Shell")
+          WshShell.CurrentDirectory = "$INSTALL_DIR"
+          WshShell.Run "cmd /c $APP_NAME.bat", 0, False
+          "@ | Out-File -FilePath "$INSTALL_DIR\Start-$APP_NAME.vbs" -Encoding ASCII
+          
+          Write-Host "📦 Creating ZIP archive..."
+          Compress-Archive -Path "$INSTALL_DIR\*" -DestinationPath "RabbitSync-Windows.zip" -Force
+          
+          Write-Host "✅ Windows portable app created"
+
+      - name: Create NSIS installer (optional)
+        shell: powershell
+        run: |
+          choco install nsis -y
+          
+          $NSI_SCRIPT = @"
+          !define APPNAME "RabbitSync"
+          !define COMPANYNAME "RabbitSync"
+          !define DESCRIPTION "File Sync Homelab Application"
+          
+          RequestExecutionLevel admin
+          InstallDir "`$PROGRAMFILES\`${APPNAME}"
+          
+          Name "`${APPNAME}"
+          OutFile "RabbitSync-Setup.exe"
+          
+          !include "MUI2.nsh"
+          
+          !insertmacro MUI_PAGE_WELCOME
+          !insertmacro MUI_PAGE_DIRECTORY
+          !insertmacro MUI_PAGE_INSTFILES
+          !insertmacro MUI_PAGE_FINISH
+          
+          !insertmacro MUI_UNPAGE_WELCOME
+          !insertmacro MUI_UNPAGE_CONFIRM
+          !insertmacro MUI_UNPAGE_INSTFILES
+          !insertmacro MUI_UNPAGE_FINISH
+          
+          !insertmacro MUI_LANGUAGE "English"
+          
+          Section "Install"
+              SetOutPath "`$INSTDIR"
+              File /r "`$env:TEMP\RabbitSync\*"
+              
+              CreateDirectory "`$SMPROGRAMS\`${APPNAME}"
+              CreateShortcut "`$SMPROGRAMS\`${APPNAME}\`${APPNAME}.lnk" "`$INSTDIR\Start-RabbitSync.vbs" "" "`$INSTDIR\RabbitSync.ico"
+              CreateShortcut "`$DESKTOP\`${APPNAME}.lnk" "`$INSTDIR\Start-RabbitSync.vbs" "" "`$INSTDIR\RabbitSync.ico"
+              
+              WriteUninstaller "`$INSTDIR\uninstall.exe"
+              
+              WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "DisplayName" "`${APPNAME}"
+              WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "UninstallString" "`$INSTDIR\uninstall.exe"
+              WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "DisplayIcon" "`$INSTDIR\RabbitSync.ico"
+              WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}" "Publisher" "`${COMPANYNAME}"
+          SectionEnd
+          
+          Section "Uninstall"
+              Delete "`$INSTDIR\uninstall.exe"
+              Delete "`$DESKTOP\`${APPNAME}.lnk"
+              RMDir /r "`$SMPROGRAMS\`${APPNAME}"
+              RMDir /r "`$INSTDIR"
+              
+              DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\`${APPNAME}"
+          SectionEnd
+          "@
+          
+          $NSI_SCRIPT | Out-File -FilePath "installer.nsi" -Encoding ASCII
+          
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi || Write-Host "NSIS installer creation failed, using ZIP instead"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: rabbitsync-windows
+          path: |
+            RabbitSync-Windows.zip
+            RabbitSync-Setup.exe
+          if-no-files-found: warn
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build:frontend || npm run build
+
+      - name: Create Linux packages
+        run: |
+          APP_NAME="rabbitsync"
+          VERSION="1.0.0"
+          
+          echo "📦 Creating AppImage..."
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          
+          # Copy application files
+          cp -r backend dist frontend node_modules package.json AppDir/usr/bin/ 2>/dev/null || true
+          
+          # Create launcher script
+          cat > AppDir/usr/bin/$APP_NAME << 'EOF'
+          #!/bin/bash
+          cd "$(dirname "$0")"
+          if [ -f "backend/server.js" ]; then
+              exec node backend/server.js "$@"
+          elif [ -f "dist/server.js" ]; then
+              exec node dist/server.js "$@"
+          elif [ -f "server.js" ]; then
+              exec node server.js "$@"
+          fi
+          EOF
+          chmod +x AppDir/usr/bin/$APP_NAME
+          
+          # Copy icon
+          cp frontend/src/assets/images/RabbitSyncLogo.png AppDir/usr/share/icons/hicolor/256x256/apps/$APP_NAME.png || true
+          
+          # Create desktop file
+          cat > AppDir/usr/share/applications/$APP_NAME.desktop << EOF
+          [Desktop Entry]
+          Type=Application
+          Name=RabbitSync
+          Exec=$APP_NAME
+          Icon=$APP_NAME
+          Categories=Network;Utility;
+          EOF
+          
+          # Create AppRun
+          cat > AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${PATH}"
+          exec "${HERE}/usr/bin/rabbitsync" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+          
+          # Build AppImage
+          ./appimagetool-x86_64.AppImage AppDir RabbitSync-linux-x86_64.AppImage || echo "AppImage creation failed"
+          
+          echo "📦 Creating tar.gz archive..."
+          tar -czf RabbitSync-linux-x86_64.tar.gz \
+              backend dist frontend/dist node_modules package.json \
+              frontend/src/assets/images/RabbitSyncLogo.* \
+              install/linux.sh 2>/dev/null || true
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: rabbitsync-linux
+          path: |
+            RabbitSync-linux-x86_64.AppImage
+            RabbitSync-linux-x86_64.tar.gz
+          if-no-files-found: warn
+
+  create-release-assets:
+    needs: [build-mac, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Display structure of downloaded files
+        run: ls -R
+
+      - name: Create release assets
+        run: |
+          echo "📦 Preparing release assets..."
+          mkdir -p release-assets
+          
+          # Move all artifacts to release-assets directory
+          if [ -d "rabbitsync-macos" ]; then
+              mv rabbitsync-macos/* release-assets/ 2>/dev/null || true
+          fi
+          if [ -d "rabbitsync-windows" ]; then
+              mv rabbitsync-windows/* release-assets/ 2>/dev/null || true
+          fi
+          if [ -d "rabbitsync-linux" ]; then
+              mv rabbitsync-linux/* release-assets/ 2>/dev/null || true
+          fi
+          
+          ls -la release-assets/
+
+      - name: Upload combined release assets
+        uses: actions/upload-artifact@v3
+        with:
+          name: all-release-assets
+          path: release-assets/
+          retention-days: 30

@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get last tag
+        id: last_tag
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "last_tag=$LAST_TAG" >> $GITHUB_OUTPUT
+          echo "Last tag: $LAST_TAG"
+
+      - name: Parse version from last tag
+        id: parse_version
+        run: |
+          LAST_TAG="${{ steps.last_tag.outputs.last_tag }}"
+          VERSION=${LAST_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+          echo "major=$MAJOR" >> $GITHUB_OUTPUT
+          echo "minor=$MINOR" >> $GITHUB_OUTPUT
+          echo "patch=$PATCH" >> $GITHUB_OUTPUT
+          echo "Parsed version: $MAJOR.$MINOR.$PATCH"
+
+      - name: Determine version bump
+        id: version_bump
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          MAJOR=${{ steps.parse_version.outputs.major }}
+          MINOR=${{ steps.parse_version.outputs.minor }}
+          PATCH=${{ steps.parse_version.outputs.patch }}
+          
+          if echo "$COMMIT_MSG" | grep -i "^major:" > /dev/null; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            BUMP_TYPE="major"
+          elif echo "$COMMIT_MSG" | grep -i "^minor:" > /dev/null; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            BUMP_TYPE="minor"
+          elif echo "$COMMIT_MSG" | grep -i "^patch:" > /dev/null; then
+            PATCH=$((PATCH + 1))
+            BUMP_TYPE="patch"
+          else
+            echo "No version bump keyword found in commit message"
+            echo "Commit message must start with 'major:', 'minor:', or 'patch:'"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION ($BUMP_TYPE bump)"
+
+      - name: Create tag
+        if: steps.version_bump.outputs.skip != 'true'
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag ${{ steps.version_bump.outputs.new_version }}
+          git push origin ${{ steps.version_bump.outputs.new_version }}
+
+      - name: Generate changelog
+        if: steps.version_bump.outputs.skip != 'true'
+        id: changelog
+        run: |
+          LAST_TAG="${{ steps.last_tag.outputs.last_tag }}"
+          NEW_TAG="${{ steps.version_bump.outputs.new_version }}"
+          
+          if [ "$LAST_TAG" = "v0.0.0" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s" HEAD)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s" ${LAST_TAG}..HEAD)
+          fi
+          
+          # Escape for GitHub Actions multiline output
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: steps.version_bump.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version_bump.outputs.new_version }}
+          name: Release ${{ steps.version_bump.outputs.new_version }}
+          body: |
+            ## What's Changed
+            
+            ${{ steps.changelog.outputs.changelog }}
+            
+            **Full Changelog**: ${{ github.server_url }}/${{ github.repository }}/compare/${{ steps.last_tag.outputs.last_tag }}...${{ steps.version_bump.outputs.new_version }}
+          draft: false
+          prerelease: false

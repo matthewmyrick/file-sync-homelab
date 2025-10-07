@@ -6,8 +6,8 @@ export function LoadSettings() {
   return window['go']['main']['App']['LoadSettings']();
 }
 
-export function SaveSettings(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['SaveSettings'](arg1, arg2, arg3, arg4);
+export function SaveSettings(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SaveSettings'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function SelectFolder() {
@@ -22,12 +22,16 @@ export function StopWatching() {
   return window['go']['main']['App']['StopWatching']();
 }
 
-export function SyncEntireFolder() {
-  return window['go']['main']['App']['SyncEntireFolder']();
-}
-
 export function SyncFile(arg1) {
   return window['go']['main']['App']['SyncFile'](arg1);
+}
+
+export function SyncLocalToRemote() {
+  return window['go']['main']['App']['SyncLocalToRemote']();
+}
+
+export function SyncRemoteToLocal() {
+  return window['go']['main']['App']['SyncRemoteToLocal']();
 }
 
 export function TestConnection(arg1, arg2) {

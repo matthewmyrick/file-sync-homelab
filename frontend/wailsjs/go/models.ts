@@ -5,6 +5,7 @@ export namespace main {
 	    sshConnection: string;
 	    remotePath: string;
 	    ignoreList: string[];
+	    logRetentionMinutes: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -16,6 +17,7 @@ export namespace main {
 	        this.sshConnection = source["sshConnection"];
 	        this.remotePath = source["remotePath"];
 	        this.ignoreList = source["ignoreList"];
+	        this.logRetentionMinutes = source["logRetentionMinutes"];
 	    }
 	}
 

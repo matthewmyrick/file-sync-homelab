@@ -16,10 +16,11 @@ import (
 
 // Config represents the app configuration
 type Config struct {
-	LocalFolder   string   `json:"localFolder"`
-	SSHConnection string   `json:"sshConnection"`
-	RemotePath    string   `json:"remotePath"`
-	IgnoreList    []string `json:"ignoreList"`
+	LocalFolder         string   `json:"localFolder"`
+	SSHConnection       string   `json:"sshConnection"`
+	RemotePath          string   `json:"remotePath"`
+	IgnoreList          []string `json:"ignoreList"`
+	LogRetentionMinutes int      `json:"logRetentionMinutes"`
 }
 
 // App struct
@@ -30,6 +31,8 @@ type App struct {
 	sshConnection string
 	remotePath    string
 	ignoreList    []string
+	pollTicker    *time.Ticker
+	stopPoll      chan bool
 }
 
 // NewApp creates a new App application struct
@@ -89,7 +92,7 @@ func (a *App) TestConnection(sshConnection, remotePath string) error {
 }
 
 // SaveSettings saves the sync settings to memory and to config file
-func (a *App) SaveSettings(localFolder, sshConnection, remotePath string, ignoreList []string) error {
+func (a *App) SaveSettings(localFolder, sshConnection, remotePath string, ignoreList []string, logRetentionMinutes int) error {
 	a.localFolder = localFolder
 	a.sshConnection = sshConnection
 	a.remotePath = remotePath
@@ -97,10 +100,11 @@ func (a *App) SaveSettings(localFolder, sshConnection, remotePath string, ignore
 
 	// Save to config file
 	config := Config{
-		LocalFolder:   localFolder,
-		SSHConnection: sshConnection,
-		RemotePath:    remotePath,
-		IgnoreList:    ignoreList,
+		LocalFolder:         localFolder,
+		SSHConnection:       sshConnection,
+		RemotePath:          remotePath,
+		IgnoreList:          ignoreList,
+		LogRetentionMinutes: logRetentionMinutes,
 	}
 
 	configPath, err := getConfigPath()
@@ -183,9 +187,8 @@ func (a *App) SyncFile(filePath string) error {
 	return nil
 }
 
-// SyncEntireFolder syncs the entire local folder to remote using rsync with --delete
-// This ensures the remote matches local exactly (including deletions)
-func (a *App) SyncEntireFolder() error {
+// SyncLocalToRemote syncs local folder to remote (local → remote)
+func (a *App) SyncLocalToRemote() error {
 	if a.sshConnection == "" || a.remotePath == "" || a.localFolder == "" {
 		return fmt.Errorf("sync settings not configured")
 	}
@@ -200,28 +203,83 @@ func (a *App) SyncEntireFolder() error {
 		}
 	}
 
-	// Add source and destination
+	// Add source and destination (local → remote)
 	args = append(args, a.localFolder+"/", fmt.Sprintf("%s:%s/", a.sshConnection, a.remotePath))
 
 	cmd := exec.Command("rsync", args...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("rsync --delete error: %s, output: %s", err, string(output))
+		log.Printf("rsync local→remote error: %s, output: %s", err, string(output))
 		return fmt.Errorf("rsync failed: %w - %s", err, string(output))
 	}
 
-	log.Printf("Full sync completed with deletions")
+	log.Printf("Sync local→remote completed")
+	return nil
+}
+
+// SyncRemoteToLocal syncs remote folder to local (remote → local, server is truth)
+func (a *App) SyncRemoteToLocal() error {
+	if a.sshConnection == "" || a.remotePath == "" || a.localFolder == "" {
+		return fmt.Errorf("sync settings not configured")
+	}
+
+	// Build rsync command with exclude patterns
+	args := []string{"-avz", "--delete", "--ignore-errors"}
+
+	// Add exclude patterns from ignore list
+	for _, pattern := range a.ignoreList {
+		if pattern != "" {
+			args = append(args, "--exclude", pattern)
+		}
+	}
+
+	// Add source and destination (remote → local)
+	args = append(args, fmt.Sprintf("%s:%s/", a.sshConnection, a.remotePath), a.localFolder+"/")
+
+	cmd := exec.Command("rsync", args...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("rsync remote→local error: %s, output: %s", err, string(output))
+		return fmt.Errorf("rsync failed: %w - %s", err, string(output))
+	}
+
+	log.Printf("Sync remote→local completed")
 	return nil
 }
 
 // StartWatching starts watching the specified folder for file changes
 func (a *App) StartWatching(folderPath string) error {
 	a.localFolder = folderPath
-	// Stop existing watcher if any
+
+	// Stop existing watcher and poller if any
 	if a.watcher != nil {
 		a.watcher.Close()
 	}
+	if a.pollTicker != nil {
+		a.pollTicker.Stop()
+		a.stopPoll <- true
+	}
+
+	// INITIAL SYNC: Server → Local (server is truth, overwrites local)
+	log.Printf("Initial sync: remote→local (server overwrites local)")
+	runtime.EventsEmit(a.ctx, "syncStatus", map[string]interface{}{
+		"path":      folderPath,
+		"success":   true,
+		"operation": "INITIAL_SYNC",
+		"direction": "remote→local",
+		"timestamp": time.Now().Unix(),
+	})
+
+	err := a.SyncRemoteToLocal()
+	if err != nil {
+		log.Printf("Initial sync failed: %v", err)
+		return fmt.Errorf("initial sync failed: %w", err)
+	}
+
+	// Emit directory status after initial sync
+	a.emitDirectoryStatus()
 
 	// Create new watcher
 	watcher, err := fsnotify.NewWatcher()
@@ -272,17 +330,17 @@ func (a *App) StartWatching(folderPath string) error {
 					continue
 				}
 
-				// For any file operation (except CHMOD), do a full sync with --delete
-				// This ensures remote always mirrors local (including deletions)
+				// For any file operation (except CHMOD), sync local→remote
 				go func(path string, op fsnotify.Op) {
-					err := a.SyncEntireFolder()
+					err := a.SyncLocalToRemote()
 					if err != nil {
-						log.Printf("Failed to sync folder after %s on %s: %v", op.String(), path, err)
+						log.Printf("Failed to sync local→remote after %s on %s: %v", op.String(), path, err)
 						runtime.EventsEmit(a.ctx, "syncStatus", map[string]interface{}{
 							"path":      path,
 							"success":   false,
 							"error":     err.Error(),
 							"operation": op.String(),
+							"direction": "local→remote",
 							"timestamp": time.Now().Unix(),
 						})
 					} else {
@@ -290,6 +348,7 @@ func (a *App) StartWatching(folderPath string) error {
 							"path":      path,
 							"success":   true,
 							"operation": op.String(),
+							"direction": "local→remote",
 							"timestamp": time.Now().Unix(),
 						})
 					}
@@ -316,6 +375,43 @@ func (a *App) StartWatching(folderPath string) error {
 		return fmt.Errorf("failed to watch folder: %w", err)
 	}
 
+	// Start polling for remote changes (every 5 seconds)
+	a.pollTicker = time.NewTicker(5 * time.Second)
+	a.stopPoll = make(chan bool)
+
+	go func() {
+		for {
+			select {
+			case <-a.pollTicker.C:
+				// Check for remote changes and sync down
+				log.Printf("Polling for remote changes...")
+				err := a.SyncRemoteToLocal()
+				if err != nil {
+					log.Printf("Failed to sync remote→local during poll: %v", err)
+					runtime.EventsEmit(a.ctx, "syncStatus", map[string]interface{}{
+						"path":      folderPath,
+						"success":   false,
+						"error":     err.Error(),
+						"operation": "POLL",
+						"direction": "remote→local",
+						"timestamp": time.Now().Unix(),
+					})
+				} else {
+					runtime.EventsEmit(a.ctx, "syncStatus", map[string]interface{}{
+						"path":      folderPath,
+						"success":   true,
+						"operation": "POLL",
+						"direction": "remote→local",
+						"timestamp": time.Now().Unix(),
+					})
+				}
+			case <-a.stopPoll:
+				log.Printf("Stopped polling for remote changes")
+				return
+			}
+		}
+	}()
+
 	return nil
 }
 
@@ -335,10 +431,38 @@ func addSubdirectories(watcher *fsnotify.Watcher, root string) error {
 	})
 }
 
-// StopWatching stops the current file watcher
+// emitDirectoryStatus emits sync status for all subdirectories
+func (a *App) emitDirectoryStatus() {
+	if a.localFolder == "" {
+		return
+	}
+
+	// Walk through all directories and emit their status
+	filepath.Walk(a.localFolder, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() && path != a.localFolder {
+			relPath, _ := filepath.Rel(a.localFolder, path)
+			runtime.EventsEmit(a.ctx, "directoryStatus", map[string]interface{}{
+				"path":      relPath,
+				"success":   true,
+				"timestamp": time.Now().Unix(),
+			})
+		}
+		return nil
+	})
+}
+
+// StopWatching stops the current file watcher and polling
 func (a *App) StopWatching() {
 	if a.watcher != nil {
 		a.watcher.Close()
 		a.watcher = nil
+	}
+	if a.pollTicker != nil {
+		a.pollTicker.Stop()
+		a.stopPoll <- true
+		a.pollTicker = nil
 	}
 }

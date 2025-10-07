@@ -4,7 +4,7 @@ import {main} from '../models';
 
 export function LoadSettings():Promise<main.Config>;
 
-export function SaveSettings(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
+export function SaveSettings(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:number):Promise<void>;
 
 export function SelectFolder():Promise<string>;
 
@@ -12,8 +12,10 @@ export function StartWatching(arg1:string):Promise<void>;
 
 export function StopWatching():Promise<void>;
 
-export function SyncEntireFolder():Promise<void>;
-
 export function SyncFile(arg1:string):Promise<void>;
+
+export function SyncLocalToRemote():Promise<void>;
+
+export function SyncRemoteToLocal():Promise<void>;
 
 export function TestConnection(arg1:string,arg2:string):Promise<void>;

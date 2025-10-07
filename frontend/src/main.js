@@ -1,7 +1,7 @@
 import './style.css';
 import './app.css';
 
-import logo from './assets/images/logo-universal.png';
+import logo from './assets/images/RabbitSyncLogo.png';
 import {SelectFolder, StartWatching, StopWatching, SaveSettings, LoadSettings, TestConnection} from '../wailsjs/go/main/App';
 import {EventsOn} from '../wailsjs/runtime/runtime';
 
@@ -13,23 +13,67 @@ document.querySelector('#app').innerHTML = `
                 <h2>File Watcher</h2>
             </div>
             <div class="tabs-vertical">
-                <button class="tab-btn-vertical active" data-tab="settings">
-                    <span class="tab-icon">⚙️</span>
-                    <span class="tab-label">Settings</span>
+                <button class="tab-btn-vertical active" data-tab="sync">
+                    <span class="tab-icon">🔄</span>
+                    <span class="tab-label">Sync Status</span>
                 </button>
                 <button class="tab-btn-vertical" data-tab="logs">
                     <span class="tab-icon">📋</span>
                     <span class="tab-label">Logs</span>
                 </button>
-                <button class="tab-btn-vertical" data-tab="sync">
-                    <span class="tab-icon">🔄</span>
-                    <span class="tab-label">Sync Status</span>
+                <button class="tab-btn-vertical" data-tab="settings">
+                    <span class="tab-icon">⚙️</span>
+                    <span class="tab-label">Settings</span>
                 </button>
             </div>
         </div>
         <div class="main-content-area">
+            <!-- Sync Status Content -->
+            <div id="sync-content" class="content-view active">
+                <div class="content-header">
+                    <h1>Sync Status</h1>
+                </div>
+                <div class="control-panel">
+                    <div class="control-item">
+                        <label>Monitoring Folder:</label>
+                        <div id="syncWatchFolder" class="folder-display-inline">Not set</div>
+                    </div>
+                    <div class="control-actions">
+                        <div id="syncSummary" class="sync-summary">
+                            <span class="sync-stat">No sync data</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="sync-container">
+                    <div id="syncList" class="sync-list">
+                        <div class="empty-state">No sync activity yet</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Content -->
+            <div id="logs-content" class="content-view">
+                <div class="content-header">
+                    <h1>File Change Logs</h1>
+                </div>
+                <div class="control-panel">
+                    <div class="control-item">
+                        <label>Watching Folder:</label>
+                        <div id="logsWatchFolder" class="folder-display-inline">Not set</div>
+                    </div>
+                    <div class="control-actions">
+                        <button class="btn btn-primary" id="startWatchingBtn" disabled>Start Watching</button>
+                        <button class="btn btn-danger" id="stopWatchingBtn" disabled>Stop Watching</button>
+                        <div id="status" class="status-indicator-inline">Not watching</div>
+                    </div>
+                </div>
+                <div class="logs-container">
+                    <div id="logs" class="logs-content"></div>
+                </div>
+            </div>
+
             <!-- Settings Content -->
-            <div id="settings-content" class="content-view active">
+            <div id="settings-content" class="content-view">
                 <div class="content-header">
                     <h1>Settings</h1>
                 </div>
@@ -62,51 +106,13 @@ document.querySelector('#app').innerHTML = `
                     </div>
 
                     <div class="setting-section">
+                        <h3>Log Retention Time</h3>
+                        <p class="help-text">How long to keep logs before pruning (in minutes)</p>
+                        <input type="number" id="logRetentionInput" class="text-input" placeholder="15" value="15" min="1" />
+                    </div>
+
+                    <div class="setting-section">
                         <button class="btn btn-primary" id="saveSettingsBtn">Save Settings</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Logs Content -->
-            <div id="logs-content" class="content-view">
-                <div class="content-header">
-                    <h1>File Change Logs</h1>
-                </div>
-                <div class="control-panel">
-                    <div class="control-item">
-                        <label>Watching Folder:</label>
-                        <div id="logsWatchFolder" class="folder-display-inline">Not set</div>
-                    </div>
-                    <div class="control-actions">
-                        <button class="btn btn-primary" id="startWatchingBtn" disabled>Start Watching</button>
-                        <button class="btn btn-danger" id="stopWatchingBtn" disabled>Stop Watching</button>
-                        <div id="status" class="status-indicator-inline">Not watching</div>
-                    </div>
-                </div>
-                <div class="logs-container">
-                    <div id="logs" class="logs-content"></div>
-                </div>
-            </div>
-
-            <!-- Sync Status Content -->
-            <div id="sync-content" class="content-view">
-                <div class="content-header">
-                    <h1>Sync Status</h1>
-                </div>
-                <div class="control-panel">
-                    <div class="control-item">
-                        <label>Monitoring Folder:</label>
-                        <div id="syncWatchFolder" class="folder-display-inline">Not set</div>
-                    </div>
-                    <div class="control-actions">
-                        <div id="syncSummary" class="sync-summary">
-                            <span class="sync-stat">No sync data</span>
-                        </div>
-                    </div>
-                </div>
-                <div class="sync-container">
-                    <div id="syncList" class="sync-list">
-                        <div class="empty-state">No sync activity yet</div>
                     </div>
                 </div>
             </div>
@@ -128,23 +134,31 @@ const folderInput = document.getElementById('folderInput');
 const sshConnectionInput = document.getElementById('sshConnectionInput');
 const remotePathInput = document.getElementById('remotePathInput');
 const ignoreListInput = document.getElementById('ignoreListInput');
+const logRetentionInput = document.getElementById('logRetentionInput');
 const logsWatchFolder = document.getElementById('logsWatchFolder');
 const syncWatchFolder = document.getElementById('syncWatchFolder');
 const statusDiv = document.getElementById('status');
 const logsDiv = document.getElementById('logs');
+const syncList = document.getElementById('syncList');
+const syncSummary = document.getElementById('syncSummary');
 
 let globalFolder = '';
 let sshConnection = '';
 let remotePath = '';
 let ignoreList = [];
+let logRetentionMinutes = 15;
 let isWatching = false;
+
+// Track directory sync status
+let directorySyncStatus = new Map(); // path -> { success: bool, error: string, lastSync: timestamp }
 
 // Track original settings to detect changes
 let originalSettings = {
     folder: '',
     connection: '',
     path: '',
-    ignoreList: ''
+    ignoreList: '',
+    logRetention: 15
 };
 
 // Check if settings have changed
@@ -152,7 +166,8 @@ function hasSettingsChanged() {
     return globalFolder !== originalSettings.folder ||
            sshConnectionInput.value.trim() !== originalSettings.connection ||
            remotePathInput.value.trim() !== originalSettings.path ||
-           ignoreListInput.value.trim() !== originalSettings.ignoreList;
+           ignoreListInput.value.trim() !== originalSettings.ignoreList ||
+           parseInt(logRetentionInput.value) !== originalSettings.logRetention;
 }
 
 // Update save button state
@@ -194,10 +209,9 @@ async function loadInitialSettings() {
             ignoreList = config.ignoreList;
             ignoreListInput.value = config.ignoreList.join('\n');
         }
-
-        // Enable start watching if all settings are present
-        if (globalFolder && sshConnection && remotePath) {
-            startWatchingBtn.disabled = false;
+        if (config.logRetentionMinutes) {
+            logRetentionMinutes = config.logRetentionMinutes;
+            logRetentionInput.value = config.logRetentionMinutes;
         }
 
         // Update original settings for change detection
@@ -205,11 +219,31 @@ async function loadInitialSettings() {
             folder: globalFolder,
             connection: sshConnection,
             path: remotePath,
-            ignoreList: ignoreListInput.value
+            ignoreList: ignoreListInput.value,
+            logRetention: logRetentionMinutes
         };
 
         // Initial button state
         saveSettingsBtn.disabled = true;
+
+        // Auto-start watching if all settings are present
+        if (globalFolder && sshConnection && remotePath) {
+            startWatchingBtn.disabled = false;
+
+            // Automatically start watching
+            try {
+                await StartWatching(globalFolder);
+                isWatching = true;
+                startWatchingBtn.disabled = true;
+                stopWatchingBtn.disabled = false;
+                statusDiv.textContent = `Watching: ${globalFolder}`;
+                statusDiv.className = 'status-indicator-inline status-active';
+                addLog(`Auto-started watching: ${globalFolder}`, 'info');
+            } catch (err) {
+                console.error('Error auto-starting watcher:', err);
+                addLog(`Error auto-starting: ${err}`, 'error');
+            }
+        }
     } catch (err) {
         console.error('Error loading settings:', err);
     }
@@ -222,6 +256,7 @@ loadInitialSettings();
 sshConnectionInput.addEventListener('input', updateSaveButtonState);
 remotePathInput.addEventListener('input', updateSaveButtonState);
 ignoreListInput.addEventListener('input', updateSaveButtonState);
+logRetentionInput.addEventListener('input', updateSaveButtonState);
 
 // Tab switching
 tabBtns.forEach(btn => {
@@ -260,6 +295,7 @@ saveSettingsBtn.addEventListener('click', async () => {
     const newConnection = sshConnectionInput.value.trim();
     const newRemotePath = remotePathInput.value.trim();
     const ignoreListText = ignoreListInput.value.trim();
+    const newLogRetention = parseInt(logRetentionInput.value) || 15;
 
     // Parse ignore list - split by newlines and filter empty lines
     const newIgnoreList = ignoreListText
@@ -285,8 +321,9 @@ saveSettingsBtn.addEventListener('click', async () => {
         sshConnection = newConnection;
         remotePath = newRemotePath;
         ignoreList = newIgnoreList;
+        logRetentionMinutes = newLogRetention;
 
-        await SaveSettings(globalFolder, sshConnection, remotePath, ignoreList);
+        await SaveSettings(globalFolder, sshConnection, remotePath, ignoreList, logRetentionMinutes);
 
         // Update other tabs with the settings
         logsWatchFolder.textContent = globalFolder;
@@ -297,7 +334,8 @@ saveSettingsBtn.addEventListener('click', async () => {
             folder: globalFolder,
             connection: sshConnection,
             path: remotePath,
-            ignoreList: ignoreListText
+            ignoreList: ignoreListText,
+            logRetention: logRetentionMinutes
         };
 
         // Enable start watching
@@ -361,14 +399,55 @@ EventsOn('fileChange', (data) => {
     addLog(data.message, type);
 });
 
+// Listen for directory status events from Go
+EventsOn('directoryStatus', (data) => {
+    directorySyncStatus.set(data.path, {
+        success: data.success,
+        error: data.error || null,
+        lastSync: Date.now()
+    });
+    updateSyncDashboard();
+});
+
 // Listen for sync status events from Go
 EventsOn('syncStatus', (data) => {
     const relPath = data.path.replace(globalFolder, '').replace(/^\//, '');
+    const direction = data.direction || 'local→remote';
+    const arrow = direction === 'remote→local' ? '⬇️' : '⬆️';
 
+    // Update directory sync status
     if (data.success) {
-        addLog(`✓ Synced [${data.operation}]: ${relPath}`, 'info');
+        // Mark directory as synced successfully
+        const dirPath = relPath ? relPath.split('/')[0] : globalFolder;
+        directorySyncStatus.set(dirPath, {
+            success: true,
+            error: null,
+            lastSync: Date.now()
+        });
     } else {
-        addLog(`✗ Sync failed [${data.operation}]: ${relPath} - ${data.error}`, 'error');
+        // Mark directory/file with error
+        const dirPath = relPath ? relPath.split('/')[0] : globalFolder;
+        directorySyncStatus.set(relPath || dirPath, {
+            success: false,
+            error: data.error,
+            lastSync: Date.now()
+        });
+    }
+
+    // Update sync status dashboard
+    updateSyncDashboard();
+
+    // Add to logs
+    if (data.success) {
+        if (data.operation === 'INITIAL_SYNC') {
+            addLog(`${arrow} Initial sync from server (server overwrites local)`, 'info');
+        } else if (data.operation === 'POLL') {
+            addLog(`${arrow} Pulled remote changes [${direction}]`, 'info');
+        } else {
+            addLog(`${arrow} Synced [${data.operation}]: ${relPath} [${direction}]`, 'info');
+        }
+    } else {
+        addLog(`✗ Sync failed [${data.operation}]: ${relPath} [${direction}] - ${data.error}`, 'error');
     }
 });
 
@@ -377,8 +456,69 @@ function addLog(message, type = 'log') {
     const logEntry = document.createElement('div');
     logEntry.className = `log-entry log-${type}`;
     logEntry.textContent = message;
+    logEntry.dataset.timestamp = Date.now();
     logsDiv.appendChild(logEntry);
 
     // Auto-scroll to bottom
     logsDiv.scrollTop = logsDiv.scrollHeight;
+
+    // Prune logs older than 5 minutes
+    pruneLogs();
+}
+
+// Prune logs older than configured retention time
+function pruneLogs() {
+    const retentionMs = logRetentionMinutes * 60 * 1000;
+    const cutoffTime = Date.now() - retentionMs;
+    const logEntries = logsDiv.querySelectorAll('.log-entry');
+
+    logEntries.forEach(entry => {
+        const timestamp = parseInt(entry.dataset.timestamp);
+        if (timestamp < cutoffTime) {
+            entry.remove();
+        }
+    });
+}
+
+// Update sync status dashboard
+function updateSyncDashboard() {
+    if (directorySyncStatus.size === 0) {
+        syncSummary.innerHTML = '<span class="sync-stat">No sync data</span>';
+        syncList.innerHTML = '<div class="empty-state">No sync activity yet</div>';
+        return;
+    }
+
+    // Count successes and failures
+    let successCount = 0;
+    let failCount = 0;
+    directorySyncStatus.forEach(status => {
+        if (status.success) successCount++;
+        else failCount++;
+    });
+
+    // Update summary
+    syncSummary.innerHTML = `
+        <span class="sync-stat sync-success">✓ ${successCount} synced</span>
+        <span class="sync-stat sync-failed">✗ ${failCount} failed</span>
+    `;
+
+    // Show only directories/files with errors, or all directories if no errors
+    const entries = Array.from(directorySyncStatus.entries());
+    const failedEntries = entries.filter(([_, status]) => !status.success);
+    const displayEntries = failedEntries.length > 0 ? failedEntries : entries;
+
+    syncList.innerHTML = displayEntries.map(([path, status]) => {
+        const statusClass = status.success ? 'sync-ok' : 'sync-error';
+        const icon = status.success ? '✓' : '✗';
+        const time = new Date(status.lastSync).toLocaleTimeString();
+
+        return `
+            <div class="sync-item ${statusClass}">
+                <div class="sync-icon">${icon}</div>
+                <div class="sync-path">${path}</div>
+                <div class="sync-status">${time}</div>
+                ${status.error ? `<div class="sync-error-msg">${status.error}</div>` : ''}
+            </div>
+        `;
+    }).join('');
 }

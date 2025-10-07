@@ -6,8 +6,8 @@ export function LoadSettings() {
   return window['go']['main']['App']['LoadSettings']();
 }
 
-export function SaveSettings(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['SaveSettings'](arg1, arg2, arg3, arg4, arg5);
+export function SaveSettings(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['SaveSettings'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function SelectFolder() {

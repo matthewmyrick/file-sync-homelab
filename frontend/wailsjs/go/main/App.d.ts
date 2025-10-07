@@ -4,7 +4,7 @@ import {main} from '../models';
 
 export function LoadSettings():Promise<main.Config>;
 
-export function SaveSettings(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:number):Promise<void>;
+export function SaveSettings(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:number,arg6:number):Promise<void>;
 
 export function SelectFolder():Promise<string>;
 

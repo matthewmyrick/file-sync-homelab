@@ -6,6 +6,7 @@ export namespace main {
 	    remotePath: string;
 	    ignoreList: string[];
 	    logRetentionMinutes: number;
+	    pullSyncInterval: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
@@ -18,6 +19,7 @@ export namespace main {
 	        this.remotePath = source["remotePath"];
 	        this.ignoreList = source["ignoreList"];
 	        this.logRetentionMinutes = source["logRetentionMinutes"];
+	        this.pullSyncInterval = source["pullSyncInterval"];
 	    }
 	}
 
